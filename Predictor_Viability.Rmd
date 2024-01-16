@@ -1,0 +1,384 @@
+---
+title: "Predicting Borrowers Viability"
+output: html_document
+date: "2023-10-23"
+---
+
+#### Project Background
+
+In the present-day context, the demand for loans is on the rise due to a multitude of factors. This growing need for loans has given rise to a diverse array of entities, including peer-to-peer lending platforms, banks, and more, that provide financial assistance. The ensuing concern revolves around whether these disbursed loans will be repaid in their entirety or not.
+
+### Major Task 1 - Load, Prepare, and Explore Data
+  
+#### 3. Add the basic code to your notebook to explain the problem and load the libraries.
+
+```{r}
+# Load required libraries
+library(tidyverse, warn.conflicts=FALSE)
+library(rsample, warn.conflicts=FALSE)
+library(yardstick, warn.conflicts = FALSE)
+library(rpart, warn.conflicts=FALSE)
+library(bnlearn, warn.conflicts=FALSE)
+library(randomForest, warn.conflicts=FALSE)
+library(xgboost, warn.conflicts=FALSE)
+library(dplyr, warn.conflicts=FALSE)
+
+```
+
+```{r}
+set.seed(1457)
+```
+\
+
+#### 4. Load the data file and do basic cleanup and type conversion. The data is mostly clean, but you’ll need to convert some variables to factors, for example.
+
+```{r}
+# Load the data from a CSV file
+sba = read.delim('SBAcase.11.13.17.csv', header = TRUE, sep = ",")
+
+glimpse(sba)
+```
+
+```{r}
+sba  = sba %>%
+  mutate(across(UrbanRural | New | RealEstate | Recession, as.logical),
+         LowDoc = LowDoc %in% c("Y", "T"),
+         RevLineCr = RevLineCr %in% c("Y","T"))
+glimpse(sba)
+```
+\
+
+
+#### 5. Drop all outcome columns except for “Default”. An outcome column is a column that records information about the final outcome of the loan, such as the amount charged off. The outcome variables are MIS_Status, BalanceGross, ChgOffPrinGr, and ChgOffDate. Also remove the Selected, xx, and daysterm columns. You may need to further transform the outcome variable to be a factor instead of a logical (my example code does this).
+
+
+```{r}
+sba_new = sba %>%
+  select(-xx, -daysterm, -Selected, -NewExist) %>%
+  select(-MIS_Status, -ChgOffPrinGr, -ChgOffDate)
+
+glimpse(sba_new)
+```
+
+
+```{r}
+sba_p = sba_new %>%
+  select(-LoanNr_ChkDgt, -Name, -City, -State, -Zip, -Bank, -BankState, -NAICS, -ApprovalDate)
+  
+glimpse(sba_p)
+```
+
+
+```{r}
+sba_p = sba_p %>%
+  mutate(Outcome = as.factor(if_else(as.logical(Default),"Default","PaidOff"))) %>%
+  select(-Default)
+
+glimpse(sba_p)
+```
+  \
+
+#### 6. Randomly split your data into a 10% testing and 90% training set.
+
+```{r}
+# Splitting the data with 90% training data and 10% testing data
+
+split = initial_split(sba_p, prop = .9)
+train = training(split)
+test = testing(split)
+
+glimpse(train)
+```
+  \
+
+#### 7. Provide some basic exploratory descriptions of your training set:
+  a. How many rows? How many columns?
+  
+```{r}
+train %>%
+  summarize(NumRows = n(),
+            NumCols = ncol(.)) %>%
+  print()
+```
+  
+  b. What is the distribution of the target variable ‘default’? That is, how many
+loans defaulted vs. were paid off?
+
+```{r}
+train %>%
+  count(Outcome) %>%
+  print()
+```
+
+  c. What are the distributions of some of the other variables that look
+interesting?
+
+
+
+```{r}
+# Create a bar chart for the "UrbanRural" variable
+bar_chart_urban_rural <- train %>%
+  group_by(UrbanRural) %>%
+  summarize(Count = n()) %>%
+  ggplot(aes(x = UrbanRural, y = Count, fill = UrbanRural)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of UrbanRural Variable", x = "UrbanRural", y = "Count")
+
+print(bar_chart_urban_rural)
+
+```
+
+```{r}
+ggplot(train, aes(x=ApprovalFY)) +
+  geom_histogram(birwidth = 1, fill = "blue", color ="red") +
+  labs(title = "Distribution of Approved Fiscal year", x = "Approval Fiscal Year",y = "Frequency")
+```
+
+
+
+  d. Pick a couple of categorical feature variables, like UrbanRural and look the
+default rates (fraction of loans that default) between different levels of
+those variables to get a sense of the data.
+
+```{r}
+# Column - UrbanRural
+
+train %>%
+  count(UrbanRural) %>%
+  print()
+```
+```{r}
+# Column - RealEstate
+
+train %>%
+  count(RealEstate) %>%
+  print()
+```
+
+
+
+
+
+
+  \
+
+#### 8. Pick a couple rows of your testing data and look at them — save these rows for later so you can explore the model outputs.
+
+```{r}
+head(test)
+```
+
+
+
+### Major Task II - First Classifier
+
+
+#### 1. Train a naïve Bayesian classifier with naive.bayes to predict default using the variables New, Recession, RevLineCr, and LowDoc.
+```{r}
+nb.cols = c("New","Recession","RevLineCr","LowDoc")
+```
+
+
+#### 2. Use this model to predict default for your example rows. Is it right?
+```{r}
+nb.train = train %>%
+  select(Outcome, any_of(nb.cols)) %>%
+  mutate(across(everything(),as.factor)) %>%
+  as.data.frame()
+
+glimpse(nb.train)
+
+```
+```{r}
+mod.nb = naive.bayes(nb.train,"Outcome",nb.cols)
+
+summary(mod.nb)
+
+```
+
+
+#### 3. Measure the accuracy, precision, and false positive rate of using your classifier to predict all of the testing data.
+```{r}
+nb.test = test %>%
+  select(Outcome, any_of(nb.cols)) %>%
+  mutate(across(everything(),as.factor)) %>%
+  as.data.frame()
+
+nb.test$Prediction = predict(mod.nb,nb.test)
+
+glimpse(nb.test)
+```
+```{r}
+accuracy(nb.test, Outcome, Prediction)
+```
+
+```{r}
+a2_metrics = metric_set(accuracy, precision, sensitivity, specificity)
+a2_metrics(nb.test, truth = Outcome, estimate = Prediction)
+```
+
+
+
+### Major Task III - Trees and Forests
+
+#### 1. Identify the variables that might be useful for prediction (basically everything that isn’t just the business identifier like name or code, or the free-text fields like location).
+
+Based on the preceding exploration, the following variables have been retained: ApprovalFY, Term, NoEmp, CreateJob, RetainedJob, UrbanRural, RevLineCr, LowDoc, DisbursementDate, DisbursementGross, BalanceGross, GrAppv, SBA_Appv, New, RealEstate, Portion, and Recession. The remaining variables were removed from the dataset during the cleaning and exploration process.
+
+
+#### 2. Use rpart to train a rdecision tree on these variables
+```{r}
+mod.dt = rpart(Outcome ~
+                 ApprovalFY + Term + NoEmp + CreateJob + RetainedJob + UrbanRural + RevLineCr + LowDoc + 
+                 DisbursementDate + DisbursementGross + BalanceGross + GrAppv + SBA_Appv + New + 
+                 RealEstate + Portion + Recession
+               ,train)
+
+```
+
+#### 3. Visualize the decision tree with plot.
+```{r}
+par(xpd = TRUE)
+plot(mod.dt, compress = TRUE, uniform = TRUE, cex = 2)
+text(mod.dt, use.n = TRUE, cex = 0.9)
+
+```
+
+#### 4. Look at its output on your examples.
+```{r}
+dt.test = test %>%
+  mutate(Prediction = predict(mod.dt, test, type= "class"))
+
+glimpse(dt.test)  
+```
+
+#### 5. Measure the accuracy, precision, sensitivity, and specificity on your testing data.
+```{r}
+a2_metrics(dt.test,truth = Outcome, estimate = Prediction)
+
+```
+
+
+
+
+### Major Task IV - Advance Decision Trees
+
+
+
+#### 1. Train a random forest on the same variables as your decision tree from Pt. III.
+```{r}
+
+mod.rf = randomForest(Outcome ~
+                 ApprovalFY + Term + NoEmp + CreateJob + RetainedJob + UrbanRural + RevLineCr + LowDoc + 
+                 DisbursementDate + DisbursementGross + BalanceGross + GrAppv + SBA_Appv + New + 
+                 RealEstate + Portion + Recession
+               ,train, na.action = na.omit)
+summary(mod.rf)
+```
+
+#### 2. Predict your example rows — is it right?
+```{r}
+rf.test = test %>%
+  mutate(Prediction = predict(mod.rf,test, type="class"))
+
+glimpse(rf.test)
+```
+
+#### 3. Measure the accuracy, precision, sensitivity, and specificity on your testing data.
+```{r}
+a2_metrics(rf.test,truth = Outcome, estimate = Prediction)
+
+```
+
+#### 4. Repeat for XGBoost (optional — setting up the data is harder)
+
+```{r}
+dtrain = xgb.DMatrix(data = as.matrix(train %>% select(-Outcome)), label = as.numeric(train$Outcome) - 1)
+dtest = xgb.DMatrix(data = as.matrix(test %>% select(-Outcome)), label = as.numeric(test$Outcome) - 1)
+
+params = list(
+  objective = "binary:logistic",  
+  eval_metric = "logloss",       
+  max_depth = 6,                 
+  eta = 0.3                      
+)
+xgb_model = xgboost(params = params, data = dtrain, nrounds = 100)
+```
+
+# Predictions on the test data
+```{r}
+xgb_test_preds = predict(xgb_model, dtest)
+```
+
+# Convert predicted probabilities to class labels using a threshold of 0.5 (0 or 1)
+```{r}
+xgb_test_pred_labels = ifelse(xgb_test_preds > 0.5, 1, 0)
+```
+
+#create a dataframe with the truth and predited labels for the test data 
+```{r}
+results_test = data.frame(Outcome = as.numeric(test$Outcome) - 1, Prediction = xgb_test_pred_labels)
+```
+
+# Calculate accuracy, precision, sensitivity, and specificity
+--convert 'Outcome' in 'results_test' to a factor
+```{r}
+results_test$Outcome <- as.factor(results_test$Outcome)
+results_test$Prediction <- as.factor(xgb_test_pred_labels)
+```
+
+--compute the metrics 
+```{r}
+a2_metrics(results_test, truth = Outcome, estimate = Prediction)
+```
+
+
+### Major Task V - Wrapping Up
+
+Conclude your assignment with a table and/or bar chart that shows the performance of
+all of your models in one place, to allow you to easily compare them, a brief discussion of
+which model seemed to perform best, and 1–2 paragraphs of reflection on what you
+learned through this assignment.
+
+```{r}
+
+test_all = nb.test %>%
+  select(Outcome, nb_pred=Prediction) %>%
+  inner_join(dt.test %>% select(Outcome, dt_pred=Prediction)) %>%
+  inner_join(rf.test %>% select(Outcome, rf_pred=Prediction)) %>%
+  #inner_join(results_test %>% select(Outcome, xgb_pred=Prediction)) %>%
+  mutate(counter = row_number()) %>%
+  glimpse()
+
+```
+
+
+
+```{r}
+
+test_long = test_all %>%
+  pivot_longer(nb_pred | dt_pred | rf_pred, names_to = "model", values_to = "predicted") %>%
+  glimpse()
+
+```
+
+
+
+
+```{r}
+all_metrics = test_long %>%
+  group_by(model) %>%
+  a2_metrics(truth = Outcome, estimate=predicted) %>%
+  select(model, metric=.metric, value=.estimate)
+all_metrics %>% pivot_wider(id_cols = model, names_from = metric, values_from = value)
+
+```
+
+
+```{r}
+ggplot(all_metrics) +
+  aes(x=model, y=value) +
+  # identity stat needed when we have computed the bar values!
+  geom_bar(stat='identity') +
+  facet_grid(~ metric)
+```
